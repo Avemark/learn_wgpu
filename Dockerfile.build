@@ -55,6 +55,6 @@ COPY . .
 RUN cargo build --target x86_64-pc-windows-gnu --release
 
 FROM scratch as runtime
-COPY --from=builder /app/target/x86_64-pc-windows-gnu/release/*.exe ./
+COPY --from=builder /app/target/x86_64-pc-windows-gnu/release/ ./
 USER 1000
 CMD ["./shakeit.exe"]
