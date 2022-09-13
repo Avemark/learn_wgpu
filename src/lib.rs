@@ -80,17 +80,7 @@ impl State {
     }
 
     fn input(&mut self, event: &WindowEvent) -> bool {
-        match event {
-            WindowEvent::CursorMoved { device_id: _, position, .. } => {
-                let x = position.x;
-                let y = position.y;
-
-                self.color.r = x;
-                self.color.b = y;
-                true
-            },
-            _ => false
-        }
+        false
     }
 
     fn update(&mut self) {
@@ -184,10 +174,6 @@ pub async fn run() {
             } => *control_flow = ControlFlow::Exit,
             WindowEvent::Resized(physical_size) => {
                 state.resize(*physical_size);
-            }
-            WindowEvent::CursorMoved { .. }=> {
-                state.input(event);
-                window.request_redraw();
             }
             WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
                 // new_inner_size is &&mut so we have to dereference it twice
