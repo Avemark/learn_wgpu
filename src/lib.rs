@@ -1,5 +1,5 @@
 use camera::{Camera, CameraUniform, CameraController};
-use instance::{Instance, NUM_INSTANCES_PER_ROW, INSTANCE_DISPLACEMENT, InstanceRaw};
+use instance::{Instance, NUM_INSTANCES_PER_ROW, InstanceRaw};
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
@@ -8,7 +8,9 @@ use winit::{
 
 use cgmath::prelude::*;
 use wgpu::util::DeviceExt;
-use crate::vertex::{Vertex, VERTICES, INDICES};
+use model::{Vertex, Model};
+use model::DrawModel;
+
 
 struct State {
     surface: wgpu::Surface,
@@ -18,11 +20,6 @@ struct State {
     size: winit::dpi::PhysicalSize<u32>,
     color: wgpu::Color,
     render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    num_indices: u32,
-    diffuse_bind_group: wgpu::BindGroup,
-    diffuse_texture: texture::Texture,
     camera: Camera,
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
@@ -31,12 +28,14 @@ struct State {
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
     depth_texture: texture::Texture,
+    obj_model: Model,
 }
 
-mod vertex;
 mod texture;
 mod camera;
 mod instance;
+mod model;
+mod resources;
 
 impl State {
     async fn new(window: &Window) -> Self {
@@ -78,9 +77,6 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let diffuse_bytes = include_bytes!("happy-tree.png");
-        let diffuse_texture = texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "happy-tree.png").unwrap();
-
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[
@@ -106,25 +102,13 @@ impl State {
                 label: Some("texture_bind_group_layout"),
             });
 
-        let diffuse_bind_group = device.create_bind_group(
-            &wgpu::BindGroupDescriptor {
-                layout: &texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&diffuse_texture.view), // CHANGED!
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler), // CHANGED!
-                    }
-                ],
-                label: Some("diffuse_bind_group"),
-            }
-        );
+        const SPACE_BETWEEN: f32 = 3.0;
         let instances = (0..NUM_INSTANCES_PER_ROW).flat_map(|z| {
             (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-                let position = cgmath::Vector3 { x: x as f32, y: 0.0, z: z as f32 } - INSTANCE_DISPLACEMENT;
+                let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+                let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+
+                let position = cgmath::Vector3 { x, y: 0.0, z };
 
                 let rotation = if position.is_zero() {
                     cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_z(), cgmath::Deg(0.0))
@@ -137,6 +121,7 @@ impl State {
                 }
             })
         }).collect::<Vec<_>>();
+
 
         let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
         let instance_buffer = device.create_buffer_init(
@@ -228,10 +213,7 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[
-                    Vertex::desc(),
-                    InstanceRaw::desc(),
-                ],
+                buffers: &[model::ModelVertex::desc(), InstanceRaw::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -269,26 +251,15 @@ impl State {
             multiview: None, // 5.
         });
 
-        let vertex_buffer = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Vertex Buffer"),
-                contents: bytemuck::cast_slice(VERTICES),
-                usage: wgpu::BufferUsages::VERTEX,
-            }
-        );
-        // NEW!
-        let index_buffer = device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Index Buffer"),
-                contents: bytemuck::cast_slice(INDICES),
-                usage: wgpu::BufferUsages::INDEX,
-            }
-        );
-        let num_indices = INDICES.len() as u32;
-
         let depth_texture = texture::Texture::create_depth_texture(&device, &config, "depth_texture");
 
 
+        let obj_model = resources::load_model(
+            "cube.obj",
+            &device,
+            &queue,
+            &texture_bind_group_layout,
+        ).await.unwrap();
 
 
         let camera_controller = CameraController::new(0.2);
@@ -301,11 +272,6 @@ impl State {
             size,
             color,
             render_pipeline,
-            vertex_buffer,
-            index_buffer,
-            num_indices,
-            diffuse_bind_group,
-            diffuse_texture,
             camera,
             camera_uniform,
             camera_buffer,
@@ -314,6 +280,7 @@ impl State {
             instances,
             instance_buffer,
             depth_texture,
+            obj_model,
         }
     }
 
@@ -367,15 +334,12 @@ impl State {
                 }),
             });
 
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.draw_model_instanced(&self.obj_model, 0..self.instances.len() as u32, &self.camera_bind_group);
 
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
         }
+
 
 
         // submit will accept anything that implements IntoIter
